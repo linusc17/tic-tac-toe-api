@@ -7,7 +7,7 @@ const config = {
   CORS_ORIGINS: [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "https://tic-tac-toe-webLC.vercel.app",
+    "https://tic-tac-toe-weblc.vercel.app",
   ],
 };
 
