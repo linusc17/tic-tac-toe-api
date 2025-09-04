@@ -90,7 +90,7 @@ const setupSocketIO = (io) => {
       callback({ success: true, roomCode, playerSymbol: "O" });
     });
 
-    // Join existing room (for when navigating to game page)
+    // WebSocket: Join existing room (for page navigation)
     socket.on(
       "join_existing_room",
       (roomCode, playerName, playerSymbol, callback) => {
@@ -101,16 +101,13 @@ const setupSocketIO = (io) => {
           return;
         }
 
-        // Check if player is already in the room
         const existingPlayer = room.players.find(
           (p) => p.name === playerName && p.symbol === playerSymbol
         );
         if (existingPlayer) {
-          // Update the socket ID for reconnection
           existingPlayer.id = socket.id;
           socket.join(roomCode);
 
-          // Send current game state
           socket.emit("game_ready", {
             players: room.players,
             gameState: room.gameState,
@@ -120,7 +117,6 @@ const setupSocketIO = (io) => {
           return;
         }
 
-        // If room needs a second player
         if (
           room.players.length === 1 &&
           !room.players.find((p) => p.symbol === playerSymbol)
@@ -135,7 +131,6 @@ const setupSocketIO = (io) => {
 
           console.log(`${playerName} joined existing room: ${roomCode}`);
 
-          // Notify both players
           io.to(roomCode).emit("game_ready", {
             players: room.players,
             gameState: room.gameState,
@@ -190,6 +185,7 @@ const setupSocketIO = (io) => {
       callback({ success: true });
     });
 
+    // WebSocket: Start new round
     socket.on("new_round", (roomCode) => {
       const room = gameRooms.get(roomCode);
       
@@ -197,7 +193,6 @@ const setupSocketIO = (io) => {
         return;
       }
 
-      // Reset game state for new round
       room.gameState = {
         board: Array(9).fill(null),
         currentTurn: "X",
@@ -206,7 +201,6 @@ const setupSocketIO = (io) => {
         isActive: true,
       };
 
-      // Notify all players in the room about the new round
       io.to(roomCode).emit("new_round_started", {
         gameState: room.gameState,
       });
@@ -220,9 +214,6 @@ const setupSocketIO = (io) => {
       for (const [roomCode, room] of gameRooms.entries()) {
         const playerIndex = room.players.findIndex((p) => p.id === socket.id);
         if (playerIndex !== -1) {
-          // Don't immediately remove the player or delete the room
-          // Give them time to reconnect (for page navigation)
-          // Only emit disconnect if the room has 2 active players
           if (room.players.length === 2) {
             socket.to(roomCode).emit("player_disconnected");
           }
