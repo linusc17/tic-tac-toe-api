@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: tic-tac-toe-api
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        fromDatabase:
+          name: mongodb
+          property: connectionString
+      - key: PORT
+        value: 10000
+databases:
+  - name: mongodb
+    databaseName: tic-tac-toe
+    user: admin
