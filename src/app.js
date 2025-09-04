@@ -188,7 +188,7 @@ const setupSocketIO = (io) => {
     // WebSocket: Start new round
     socket.on("new_round", (roomCode) => {
       const room = gameRooms.get(roomCode);
-      
+
       if (!room) {
         return;
       }
@@ -206,6 +206,33 @@ const setupSocketIO = (io) => {
       });
 
       console.log(`New round started in room: ${roomCode}`);
+    });
+
+    // WebSocket: Send chat message
+    socket.on("send_message", (roomCode, message, playerName) => {
+      const room = gameRooms.get(roomCode);
+
+      if (!room) {
+        return;
+      }
+
+      const player = room.players.find((p) => p.id === socket.id);
+      if (!player) {
+        return;
+      }
+
+      const chatMessage = {
+        id: Date.now().toString(),
+        playerName: player.name,
+        playerSymbol: player.symbol,
+        message: message.trim(),
+        timestamp: new Date().toISOString(),
+      };
+
+      io.to(roomCode).emit("new_message", chatMessage);
+      console.log(
+        `Chat message in room ${roomCode}: ${player.name}: ${message}`
+      );
     });
 
     socket.on("disconnect", () => {
