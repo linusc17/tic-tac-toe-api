@@ -90,6 +90,65 @@ const setupSocketIO = (io) => {
       callback({ success: true, roomCode, playerSymbol: "O" });
     });
 
+    // Join existing room (for when navigating to game page)
+    socket.on(
+      "join_existing_room",
+      (roomCode, playerName, playerSymbol, callback) => {
+        const room = gameRooms.get(roomCode);
+
+        if (!room) {
+          callback({ success: false, error: "Room not found" });
+          return;
+        }
+
+        // Check if player is already in the room
+        const existingPlayer = room.players.find(
+          (p) => p.name === playerName && p.symbol === playerSymbol
+        );
+        if (existingPlayer) {
+          // Update the socket ID for reconnection
+          existingPlayer.id = socket.id;
+          socket.join(roomCode);
+
+          // Send current game state
+          socket.emit("game_ready", {
+            players: room.players,
+            gameState: room.gameState,
+          });
+
+          callback({ success: true });
+          return;
+        }
+
+        // If room needs a second player
+        if (
+          room.players.length === 1 &&
+          !room.players.find((p) => p.symbol === playerSymbol)
+        ) {
+          room.players.push({
+            id: socket.id,
+            name: playerName,
+            symbol: playerSymbol,
+          });
+          room.gameState.isActive = true;
+          socket.join(roomCode);
+
+          console.log(`${playerName} joined existing room: ${roomCode}`);
+
+          // Notify both players
+          io.to(roomCode).emit("game_ready", {
+            players: room.players,
+            gameState: room.gameState,
+          });
+
+          callback({ success: true });
+          return;
+        }
+
+        callback({ success: false, error: "Room is full or invalid" });
+      }
+    );
+
     socket.on("make_move", (roomCode, position, callback) => {
       const room = gameRooms.get(roomCode);
 
@@ -131,18 +190,45 @@ const setupSocketIO = (io) => {
       callback({ success: true });
     });
 
+    socket.on("new_round", (roomCode) => {
+      const room = gameRooms.get(roomCode);
+      
+      if (!room) {
+        return;
+      }
+
+      // Reset game state for new round
+      room.gameState = {
+        board: Array(9).fill(null),
+        currentTurn: "X",
+        winner: null,
+        isDraw: false,
+        isActive: true,
+      };
+
+      // Notify all players in the room about the new round
+      io.to(roomCode).emit("new_round_started", {
+        gameState: room.gameState,
+      });
+
+      console.log(`New round started in room: ${roomCode}`);
+    });
+
     socket.on("disconnect", () => {
       console.log("Player disconnected:", socket.id);
 
       for (const [roomCode, room] of gameRooms.entries()) {
         const playerIndex = room.players.findIndex((p) => p.id === socket.id);
         if (playerIndex !== -1) {
-          socket.to(roomCode).emit("player_disconnected");
-
-          if (room.players.length === 1) {
-            gameRooms.delete(roomCode);
-            console.log(`Room ${roomCode} deleted due to player disconnect`);
+          // Don't immediately remove the player or delete the room
+          // Give them time to reconnect (for page navigation)
+          // Only emit disconnect if the room has 2 active players
+          if (room.players.length === 2) {
+            socket.to(roomCode).emit("player_disconnected");
           }
+          console.log(
+            `Player ${socket.id} disconnected from room ${roomCode}, keeping room active for reconnection`
+          );
           break;
         }
       }
@@ -168,6 +254,18 @@ const setupSocketIO = (io) => {
     }
     return null;
   };
+
+  // Clean up inactive rooms every 5 minutes
+  setInterval(() => {
+    const now = new Date();
+    for (const [roomCode, room] of gameRooms.entries()) {
+      // Remove rooms older than 30 minutes with no activity
+      if (now - room.createdAt > 30 * 60 * 1000) {
+        gameRooms.delete(roomCode);
+        console.log(`Cleaned up inactive room: ${roomCode}`);
+      }
+    }
+  }, 5 * 60 * 1000);
 };
 
 const startServer = async () => {
