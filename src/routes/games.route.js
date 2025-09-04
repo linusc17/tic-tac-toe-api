@@ -9,6 +9,7 @@ class Games extends BaseRoute {
     this.app.get("/api/games", this.listGames.bind(this));
     this.app.post("/api/games", this.createGame.bind(this));
     this.app.get("/api/games/:id", this.getGame.bind(this));
+    this.app.put("/api/games/:id", this.updateGame.bind(this));
   }
 
   async listGames(req, res, next) {
@@ -34,6 +35,16 @@ class Games extends BaseRoute {
     try {
       const { id } = req.params;
       const gameSession = await gameController.GetGame.execute(id);
+      res.json(new GameSessionMapper(gameSession));
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async updateGame(req, res, next) {
+    try {
+      const { id } = req.params;
+      const gameSession = await gameController.UpdateGame.execute(id, req.body);
       res.json(new GameSessionMapper(gameSession));
     } catch (error) {
       next(error);
