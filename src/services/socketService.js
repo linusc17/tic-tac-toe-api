@@ -201,7 +201,7 @@ const socketHandlers = {
       socket.join(roomCode);
       console.log(`${playerName} joined room: ${roomCode}`);
 
-      // Create GameSession in database when both players are present
+      // Create GameSession immediately for real-time standings
       if (room.players.length === 2) {
         try {
           const gameSession = new GameSession({
@@ -497,19 +497,51 @@ const socketHandlers = {
    * DISCONNECT - Player disconnects from server
    */
   handleDisconnect: (io, socket) => {
-    socket.on("disconnect", () => {
+    socket.on("disconnect", async () => {
       console.log("Player disconnected:", socket.id);
 
       // Find and handle disconnection from active rooms
       for (const [roomCode, room] of gameRooms.entries()) {
         const playerIndex = room.players.findIndex((p) => p.id === socket.id);
         if (playerIndex !== -1) {
-          if (room.players.length === 2) {
+          // Remove player from room
+          room.players.splice(playerIndex, 1);
+
+          // Notify remaining player if any
+          if (room.players.length > 0) {
             socket.to(roomCode).emit("player_disconnected");
+            console.log(
+              `Player ${socket.id} disconnected from room ${roomCode}. ${room.players.length} players remaining.`
+            );
+          } else {
+            // Room is empty - clean up immediately
+            console.log(`Room ${roomCode} is now empty. Cleaning up...`);
+
+            // Clean up GameSession if no rounds were played
+            if (room.gameSessionId) {
+              try {
+                const gameSession = await GameSession.findById(
+                  room.gameSessionId
+                );
+                if (gameSession && gameSession.totalRounds === 0) {
+                  await GameSession.findByIdAndDelete(room.gameSessionId);
+                  console.log(
+                    `Deleted empty GameSession: ${room.gameSessionId}`
+                  );
+                }
+              } catch (error) {
+                console.error(
+                  `Failed to cleanup GameSession ${room.gameSessionId}:`,
+                  error
+                );
+              }
+            }
+
+            // Remove room
+            gameRooms.delete(roomCode);
+            console.log(`Cleaned up empty room: ${roomCode}`);
           }
-          console.log(
-            `Player ${socket.id} disconnected from room ${roomCode}, keeping room active for reconnection`
-          );
+
           break;
         }
       }
@@ -518,17 +550,69 @@ const socketHandlers = {
 };
 
 /**
+ * Clean up empty GameSession records from database
+ * Run once on server start to clean existing empty records
+ */
+const cleanupEmptyGameSessions = async () => {
+  try {
+    const result = await GameSession.deleteMany({ totalRounds: 0 });
+    if (result.deletedCount > 0) {
+      console.log(
+        `Cleaned up ${result.deletedCount} empty GameSession records on startup`
+      );
+    }
+  } catch (error) {
+    console.error("Failed to cleanup empty GameSessions on startup:", error);
+  }
+};
+
+/**
  * Room Cleanup Service - Removes inactive rooms periodically
+ * Simple cleanup for old rooms only
  */
 const startRoomCleanup = () => {
-  setInterval(() => {
+  // Clean up existing empty records on startup
+  cleanupEmptyGameSessions();
+
+  setInterval(async () => {
     const now = new Date();
     for (const [roomCode, room] of gameRooms.entries()) {
-      // Remove rooms older than 30 minutes with no activity
+      // Clean up rooms older than 30 minutes
       if (now - room.createdAt > 30 * 60 * 1000) {
+        // Clean up GameSession if no rounds were played
+        if (room.gameSessionId) {
+          try {
+            const gameSession = await GameSession.findById(room.gameSessionId);
+            if (gameSession && gameSession.totalRounds === 0) {
+              await GameSession.findByIdAndDelete(room.gameSessionId);
+              console.log(`Deleted empty GameSession: ${room.gameSessionId}`);
+            }
+          } catch (error) {
+            console.error(
+              `Failed to cleanup GameSession ${room.gameSessionId}:`,
+              error
+            );
+          }
+        }
+
         gameRooms.delete(roomCode);
         console.log(`Cleaned up inactive room: ${roomCode}`);
       }
+    }
+
+    // Also clean up any empty GameSessions that might have been missed
+    try {
+      const result = await GameSession.deleteMany({ totalRounds: 0 });
+      if (result.deletedCount > 0) {
+        console.log(
+          `Cleaned up ${result.deletedCount} empty GameSession records during periodic cleanup`
+        );
+      }
+    } catch (error) {
+      console.error(
+        "Failed to cleanup empty GameSessions during periodic cleanup:",
+        error
+      );
     }
   }, 5 * 60 * 1000); // Run cleanup every 5 minutes
 };
