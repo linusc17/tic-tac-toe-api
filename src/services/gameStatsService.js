@@ -240,20 +240,22 @@ class GameStatsService {
       let rankSortBy = {};
 
       switch (sortBy) {
-        case "winRate":
-          sortOptions.winRate = sortOrder;
-          sortOptions.totalGames = -1; // Secondary sort by total games
-          rankSortBy = { winRate: sortOrder };
-          break;
         case "totalGames":
           sortOptions.totalGames = sortOrder;
           rankSortBy = { totalGames: sortOrder };
           break;
         case "wins":
-        default:
           sortOptions.wins = sortOrder;
           sortOptions.totalGames = -1; // Secondary sort by total games
           rankSortBy = { wins: sortOrder };
+          break;
+        case "winRate":
+        default:
+          // Competitive ranking: Win rate first, then activity, then absolute wins
+          sortOptions.winRate = sortOrder;
+          sortOptions.totalGames = -1; // Secondary: Activity/credibility
+          sortOptions.wins = -1; // Tertiary: Absolute performance
+          rankSortBy = { winRate: sortOrder };
           break;
       }
 
@@ -281,10 +283,18 @@ class GameStatsService {
             sortBy: rankSortBy,
             output: {
               rank: {
-                $rank: {}
-              }
-            }
-          }
+                $denseRank: {},
+              },
+              position: {
+                $rowNumber: {},
+              },
+            },
+          },
+        },
+        {
+          $addFields: {
+            rank: "$position",
+          },
         },
         { $skip: skip },
         { $limit: limit },
