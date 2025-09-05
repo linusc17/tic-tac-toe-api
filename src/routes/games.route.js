@@ -3,13 +3,23 @@ const BaseRoute = require("./_base.route");
 const GameSessionMapper = require("../mappers/game-session.mapper");
 const GameSessionValidator = require("../validations/game-session.validation");
 const gameController = require("../controllers/games");
+const {
+  validateCreateGame,
+  validateUpdateGame,
+  validateGetGame,
+  validateListGames,
+} = require("../middleware/validation");
 
 class Games extends BaseRoute {
   load() {
-    this.app.get("/api/games", this.listGames.bind(this));
-    this.app.post("/api/games", this.createGame.bind(this));
-    this.app.get("/api/games/:id", this.getGame.bind(this));
-    this.app.put("/api/games/:id", this.updateGame.bind(this));
+    this.app.get("/api/games", validateListGames, this.listGames.bind(this));
+    this.app.post("/api/games", validateCreateGame, this.createGame.bind(this));
+    this.app.get("/api/games/:id", validateGetGame, this.getGame.bind(this));
+    this.app.put(
+      "/api/games/:id",
+      validateUpdateGame,
+      this.updateGame.bind(this)
+    );
   }
 
   async listGames(req, res, next) {
@@ -23,7 +33,6 @@ class Games extends BaseRoute {
 
   async createGame(req, res, next) {
     try {
-      GameSessionValidator.validate("create", req.body);
       const gameSession = await gameController.CreateGame.execute(req.body);
       res.status(201).json(new GameSessionMapper(gameSession));
     } catch (error) {

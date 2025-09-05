@@ -39,7 +39,14 @@ const checkWinner = (board) => {
 /**
  * Updates game session in database with round results
  * Maps player symbols to correct database player names
- * @param {Object} room - Game room object
+ *
+ * This function is critical for maintaining accurate game statistics:
+ * - Increments totalRounds for every completed game
+ * - Maps winning symbol (X/O) to actual player names in database
+ * - Updates player-specific win counts or draw count
+ * - Handles edge cases where players or game sessions might not exist
+ *
+ * @param {Object} room - Game room object containing players and gameSessionId
  * @param {string|null} winner - Winning symbol ('X', 'O', or null for draw)
  * @param {boolean} isDraw - Whether the round ended in a draw
  */
@@ -61,6 +68,8 @@ const updateGameSessionInDatabase = async (room, winner, isDraw) => {
       }
 
       // Map winner to correct database player using name (not array position)
+      // This is crucial because player symbols (X/O) can change between rounds,
+      // but player names remain consistent in the database
       if (winnerPlayer.name === gameSession.player1Name) {
         updates.$inc.player1Wins = 1;
       } else if (winnerPlayer.name === gameSession.player2Name) {
@@ -86,12 +95,21 @@ const updateGameSessionInDatabase = async (room, winner, isDraw) => {
 
 /**
  * Starts a new round with symbol swapping and fresh game state
+ *
+ * Key behaviors:
+ * - Swaps X/O symbols between players every round (except first) for fairness
+ * - Resets game board and state for fresh round
+ * - Clears player ready status to require confirmation for next round
+ * - Fetches updated game statistics from database
+ * - Notifies all players in room about the new round
+ *
  * @param {Object} io - Socket.io server instance
  * @param {string} roomCode - Room identifier
  * @param {Object} room - Game room object
  */
 const startNewRound = async (io, roomCode, room) => {
   // Swap player symbols every round for fairness (except first game)
+  // This ensures no player always gets the advantage of going first (X always starts)
   if (room.roundCount > 0 && room.players.length === 2) {
     const temp = room.players[0].symbol;
     room.players[0].symbol = room.players[1].symbol;
@@ -202,6 +220,8 @@ const socketHandlers = {
       console.log(`${playerName} joined room: ${roomCode}`);
 
       // Create GameSession immediately for real-time standings
+      // This creates the database record as soon as 2 players join,
+      // allowing us to track statistics across multiple rounds
       if (room.players.length === 2) {
         try {
           const gameSession = new GameSession({
@@ -518,6 +538,8 @@ const socketHandlers = {
             console.log(`Room ${roomCode} is now empty. Cleaning up...`);
 
             // Clean up GameSession if no rounds were played
+            // This prevents database clutter from abandoned game sessions
+            // where players joined but never actually played any rounds
             if (room.gameSessionId) {
               try {
                 const gameSession = await GameSession.findById(
@@ -574,47 +596,52 @@ const startRoomCleanup = () => {
   // Clean up existing empty records on startup
   cleanupEmptyGameSessions();
 
-  setInterval(async () => {
-    const now = new Date();
-    for (const [roomCode, room] of gameRooms.entries()) {
-      // Clean up rooms older than 30 minutes
-      if (now - room.createdAt > 30 * 60 * 1000) {
-        // Clean up GameSession if no rounds were played
-        if (room.gameSessionId) {
-          try {
-            const gameSession = await GameSession.findById(room.gameSessionId);
-            if (gameSession && gameSession.totalRounds === 0) {
-              await GameSession.findByIdAndDelete(room.gameSessionId);
-              console.log(`Deleted empty GameSession: ${room.gameSessionId}`);
+  setInterval(
+    async () => {
+      const now = new Date();
+      for (const [roomCode, room] of gameRooms.entries()) {
+        // Clean up rooms older than 30 minutes
+        if (now - room.createdAt > 30 * 60 * 1000) {
+          // Clean up GameSession if no rounds were played
+          if (room.gameSessionId) {
+            try {
+              const gameSession = await GameSession.findById(
+                room.gameSessionId
+              );
+              if (gameSession && gameSession.totalRounds === 0) {
+                await GameSession.findByIdAndDelete(room.gameSessionId);
+                console.log(`Deleted empty GameSession: ${room.gameSessionId}`);
+              }
+            } catch (error) {
+              console.error(
+                `Failed to cleanup GameSession ${room.gameSessionId}:`,
+                error
+              );
             }
-          } catch (error) {
-            console.error(
-              `Failed to cleanup GameSession ${room.gameSessionId}:`,
-              error
-            );
           }
+
+          gameRooms.delete(roomCode);
+          console.log(`Cleaned up inactive room: ${roomCode}`);
         }
-
-        gameRooms.delete(roomCode);
-        console.log(`Cleaned up inactive room: ${roomCode}`);
       }
-    }
 
-    // Also clean up any empty GameSessions that might have been missed
-    try {
-      const result = await GameSession.deleteMany({ totalRounds: 0 });
-      if (result.deletedCount > 0) {
-        console.log(
-          `Cleaned up ${result.deletedCount} empty GameSession records during periodic cleanup`
+      // Also clean up any empty GameSessions that might have been missed
+      try {
+        const result = await GameSession.deleteMany({ totalRounds: 0 });
+        if (result.deletedCount > 0) {
+          console.log(
+            `Cleaned up ${result.deletedCount} empty GameSession records during periodic cleanup`
+          );
+        }
+      } catch (error) {
+        console.error(
+          "Failed to cleanup empty GameSessions during periodic cleanup:",
+          error
         );
       }
-    } catch (error) {
-      console.error(
-        "Failed to cleanup empty GameSessions during periodic cleanup:",
-        error
-      );
-    }
-  }, 5 * 60 * 1000); // Run cleanup every 5 minutes
+    },
+    5 * 60 * 1000
+  ); // Run cleanup every 5 minutes
 };
 
 /**
