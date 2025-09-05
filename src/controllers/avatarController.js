@@ -15,6 +15,13 @@ const uploadAvatar = async (req, res) => {
       });
     }
 
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({
+        success: false,
+        message: "User not authenticated",
+      });
+    }
+
     const userId = req.user._id;
     const file = req.file;
 
@@ -77,7 +84,9 @@ const uploadAvatar = async (req, res) => {
 
     // Update user with new avatar ID
     user.avatarId = uploadedFile._id;
-    user.avatar = `/api/avatar/${uploadedFile._id}`; // URL to retrieve avatar
+    // Use environment variable
+    const baseUrl = process.env.FRONTEND_URL;
+    user.avatar = `${baseUrl}/api/avatar/${uploadedFile._id}`;
     await user.save();
 
     res.json({
@@ -146,6 +155,13 @@ const getAvatar = async (req, res) => {
 
 const deleteAvatar = async (req, res) => {
   try {
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({
+        success: false,
+        message: "User not authenticated",
+      });
+    }
+
     const userId = req.user._id;
 
     const user = await User.findById(userId);

@@ -48,8 +48,13 @@ const uploadToGridFS = (fileBuffer, filename, contentType, metadata = {}) => {
       reject(error);
     });
 
-    uploadStream.on("finish", (file) => {
-      resolve(file);
+    uploadStream.on("finish", () => {
+      resolve({
+        _id: uploadStream.id,
+        filename: filename,
+        contentType: contentType,
+        metadata: uploadStream.options.metadata,
+      });
     });
 
     // Write buffer to stream
@@ -79,6 +84,11 @@ const getFileStream = (fileId) => {
     throw new Error("GridFS not initialized");
   }
 
+  // Validate ObjectId format
+  if (!mongoose.Types.ObjectId.isValid(fileId)) {
+    throw new Error("Invalid file ID format");
+  }
+
   return bucket.openDownloadStream(new mongoose.Types.ObjectId(fileId));
 };
 
@@ -100,10 +110,21 @@ const findFileById = async (fileId) => {
     throw new Error("GridFS not initialized");
   }
 
-  const files = await bucket
-    .find({ _id: new mongoose.Types.ObjectId(fileId) })
-    .toArray();
-  return files.length > 0 ? files[0] : null;
+  try {
+    // Validate ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(fileId)) {
+      return null;
+    }
+
+    const files = await bucket
+      .find({ _id: new mongoose.Types.ObjectId(fileId) })
+      .toArray();
+
+    return files.length > 0 ? files[0] : null;
+  } catch (error) {
+    console.error("Error finding file by ID:", error);
+    return null;
+  }
 };
 
 module.exports = {
