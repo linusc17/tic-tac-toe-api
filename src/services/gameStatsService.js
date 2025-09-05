@@ -237,19 +237,23 @@ class GameStatsService {
 
       const sortOrder = order === "desc" ? -1 : 1;
       const sortOptions = {};
+      let rankSortBy = {};
 
       switch (sortBy) {
         case "winRate":
           sortOptions.winRate = sortOrder;
           sortOptions.totalGames = -1; // Secondary sort by total games
+          rankSortBy = { winRate: sortOrder };
           break;
         case "totalGames":
           sortOptions.totalGames = sortOrder;
+          rankSortBy = { totalGames: sortOrder };
           break;
         case "wins":
         default:
           sortOptions.wins = sortOrder;
           sortOptions.totalGames = -1; // Secondary sort by total games
+          rankSortBy = { wins: sortOrder };
           break;
       }
 
@@ -272,13 +276,18 @@ class GameStatsService {
           },
         },
         { $sort: sortOptions },
+        {
+          $setWindowFields: {
+            sortBy: rankSortBy,
+            output: {
+              rank: {
+                $rank: {}
+              }
+            }
+          }
+        },
         { $skip: skip },
         { $limit: limit },
-        {
-          $addFields: {
-            rank: { $add: [skip, { $literal: 1 }] },
-          },
-        },
         {
           $project: {
             username: 1,
