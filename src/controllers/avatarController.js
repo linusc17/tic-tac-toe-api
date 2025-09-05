@@ -85,7 +85,7 @@ const uploadAvatar = async (req, res) => {
     // Update user with new avatar ID
     user.avatarId = uploadedFile._id;
     // Use environment variable
-    const baseUrl = process.env.FRONTEND_URL;
+    const baseUrl = process.env.BACKEND_URL;
     user.avatar = `${baseUrl}/api/avatar/${uploadedFile._id}`;
     await user.save();
 
