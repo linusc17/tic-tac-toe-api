@@ -278,24 +278,6 @@ class GameStatsService {
           },
         },
         { $sort: sortOptions },
-        {
-          $setWindowFields: {
-            sortBy: rankSortBy,
-            output: {
-              rank: {
-                $denseRank: {},
-              },
-              position: {
-                $rowNumber: {},
-              },
-            },
-          },
-        },
-        {
-          $addFields: {
-            rank: "$position",
-          },
-        },
         { $skip: skip },
         { $limit: limit },
         {
@@ -309,7 +291,6 @@ class GameStatsService {
             avatar: 1,
             bio: 1,
             createdAt: 1,
-            rank: 1,
           },
         },
       ];
@@ -319,8 +300,14 @@ class GameStatsService {
         User.countDocuments(matchStage),
       ]);
 
+      // Add rank to each user based on their position in the sorted results
+      const leaderboardWithRank = leaderboard.map((user, index) => ({
+        ...user,
+        rank: skip + index + 1,
+      }));
+
       return {
-        leaderboard,
+        leaderboard: leaderboardWithRank,
         pagination: {
           total: totalUsers,
           page: Math.floor(skip / limit) + 1,
