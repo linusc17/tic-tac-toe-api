@@ -10,6 +10,7 @@ const setupMiddleware = require("./middleware");
 const setupRoutes = require("./routes");
 const { errorHandler, notFoundHandler } = require("./errors");
 const { initializeSocketHandlers } = require("./services/socketService");
+const { initGridFS } = require("./services/gridfsService");
 
 const createApp = () => {
   const app = express();
@@ -35,6 +36,7 @@ const createApp = () => {
 const startServer = async () => {
   try {
     await connectDatabase(config.MONGODB_URI);
+    initGridFS(); // Initialize GridFS after database connection
     const { server } = createApp();
 
     server.listen(config.PORT, () => {

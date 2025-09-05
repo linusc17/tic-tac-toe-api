@@ -1,4 +1,8 @@
 const GameSession = require("../../models/GameSession");
+const GameStatsService = require("./gameStatsService");
+const jwt = require("jsonwebtoken");
+const config = require("../config");
+const User = require("../../models/User");
 
 // In-memory storage for active game rooms
 const gameRooms = new Map();
@@ -9,6 +13,27 @@ const gameRooms = new Map();
  */
 const generateRoomCode = () => {
   return Math.random().toString(36).substr(2, 6).toUpperCase();
+};
+
+/**
+ * Authenticates a socket token and returns user info
+ * @param {string} token - JWT token
+ * @returns {Promise<Object|null>} User object or null if invalid
+ */
+const authenticateSocket = async (token) => {
+  try {
+    if (!token) return null;
+
+    const decoded = jwt.verify(token, config.JWT_SECRET);
+    const user = await User.findById(decoded.id).select("-password");
+
+    if (!user || !user.isActive) return null;
+
+    return user;
+  } catch (error) {
+    console.error("Socket authentication error:", error.message);
+    return null;
+  }
 };
 
 /**
@@ -50,44 +75,63 @@ const checkWinner = (board) => {
  * @param {string|null} winner - Winning symbol ('X', 'O', or null for draw)
  * @param {boolean} isDraw - Whether the round ended in a draw
  */
-const updateGameSessionInDatabase = async (room, winner, isDraw) => {
+const updateGameSessionInDatabase = async (
+  room,
+  winner,
+  isDraw,
+  board,
+  moves
+) => {
   try {
-    const updates = { $inc: { totalRounds: 1 } };
+    const gameSession = await GameSession.findById(room.gameSessionId);
+    if (!gameSession) {
+      console.error(`GameSession ${room.gameSessionId} not found`);
+      return;
+    }
 
+    let gameWinner = null;
     if (winner) {
-      const gameSession = await GameSession.findById(room.gameSessionId);
-      if (!gameSession) {
-        console.error(`GameSession ${room.gameSessionId} not found`);
-        return;
-      }
-
       const winnerPlayer = room.players.find((p) => p.symbol === winner);
       if (!winnerPlayer) {
         console.error(`Winner player with symbol ${winner} not found`);
         return;
       }
 
-      // Map winner to correct database player using name (not array position)
-      // This is crucial because player symbols (X/O) can change between rounds,
-      // but player names remain consistent in the database
+      // Map winner to correct database player using name
       if (winnerPlayer.name === gameSession.player1Name) {
-        updates.$inc.player1Wins = 1;
+        gameWinner = "player1";
       } else if (winnerPlayer.name === gameSession.player2Name) {
-        updates.$inc.player2Wins = 1;
-      } else {
-        console.error(
-          `Winner ${winnerPlayer.name} doesn't match gameSession player names`
-        );
-        return;
+        gameWinner = "player2";
       }
     } else if (isDraw) {
-      updates.$inc.draws = 1;
+      gameWinner = "draw";
     }
 
-    await GameSession.findByIdAndUpdate(room.gameSessionId, updates);
-    console.log(
-      `GameSession ${room.gameSessionId} updated: winner=${winner}, isDraw=${isDraw}`
-    );
+    // Use GameStatsService to update both game session and user stats
+    if (gameWinner) {
+      try {
+        await GameStatsService.updateUserStats(gameSession, {
+          winner: gameWinner,
+          board: board || Array(9).fill(null),
+          moves: moves || [],
+        });
+        console.log(
+          `GameSession ${room.gameSessionId} and user stats updated: winner=${gameWinner}`
+        );
+      } catch (error) {
+        console.error(`Failed to update stats via GameStatsService:`, error);
+        // Fallback to old method for game session only
+        const updates = { $inc: { totalRounds: 1 } };
+        if (gameWinner === "player1") {
+          updates.$inc.player1Wins = 1;
+        } else if (gameWinner === "player2") {
+          updates.$inc.player2Wins = 1;
+        } else if (gameWinner === "draw") {
+          updates.$inc.draws = 1;
+        }
+        await GameSession.findByIdAndUpdate(room.gameSessionId, updates);
+      }
+    }
   } catch (error) {
     console.error(`Failed to update GameSession ${room.gameSessionId}:`, error);
   }
@@ -170,11 +214,41 @@ const socketHandlers = {
    * CREATE ROOM - Player creates a new game room
    */
   handleCreateRoom: (io, socket) => {
-    socket.on("create_room", (playerName, callback) => {
+    socket.on("create_room", async (dataOrPlayerName, callback) => {
+      // Handle both old format (just playerName) and new format (object with playerName and token)
+      let playerName, token;
+
+      if (typeof dataOrPlayerName === "string") {
+        // Old format: just player name
+        playerName = dataOrPlayerName;
+        token = null;
+      } else if (
+        typeof dataOrPlayerName === "object" &&
+        dataOrPlayerName !== null
+      ) {
+        // New format: object with playerName and token
+        playerName = dataOrPlayerName.playerName;
+        token = dataOrPlayerName.token;
+      } else {
+        if (callback)
+          callback({ success: false, error: "Invalid data format" });
+        return;
+      }
+
+      // Authenticate user if token provided
+      const user = await authenticateSocket(token);
+
       const roomCode = generateRoomCode();
       const roomData = {
         roomCode,
-        players: [{ id: socket.id, name: playerName, symbol: "X" }],
+        players: [
+          {
+            id: socket.id,
+            name: playerName,
+            symbol: "X",
+            userId: user ? user._id : null,
+          },
+        ],
         gameState: {
           board: Array(9).fill(null),
           currentTurn: "X",
@@ -190,8 +264,10 @@ const socketHandlers = {
       gameRooms.set(roomCode, roomData);
       socket.join(roomCode);
 
-      console.log(`Room created: ${roomCode} by ${playerName}`);
-      callback({ success: true, roomCode, playerSymbol: "X" });
+      console.log(
+        `Room created: ${roomCode} by ${playerName}${user ? ` (authenticated)` : ` (guest)`}`
+      );
+      if (callback) callback({ success: true, roomCode, playerSymbol: "X" });
     });
   },
 
@@ -199,7 +275,126 @@ const socketHandlers = {
    * JOIN ROOM - Player joins an existing room
    */
   handleJoinRoom: (io, socket) => {
-    socket.on("join_room", async (roomCode, playerName, callback) => {
+    socket.on(
+      "join_room",
+      async (roomCodeOrData, playerNameOrCallback, callbackOrUndefined) => {
+        // Handle both old format (roomCode, playerName, callback) and new format (data object, callback)
+        let roomCode, playerName, token, callback;
+
+        if (
+          typeof roomCodeOrData === "string" &&
+          typeof playerNameOrCallback === "string"
+        ) {
+          // Old format: join_room(roomCode, playerName, callback)
+          roomCode = roomCodeOrData;
+          playerName = playerNameOrCallback;
+          callback = callbackOrUndefined;
+          token = null;
+        } else if (
+          typeof roomCodeOrData === "object" &&
+          roomCodeOrData !== null
+        ) {
+          // New format: join_room(data, callback)
+          roomCode = roomCodeOrData.roomCode;
+          playerName = roomCodeOrData.playerName;
+          token = roomCodeOrData.token;
+          callback = playerNameOrCallback;
+        } else {
+          if (typeof playerNameOrCallback === "function") {
+            playerNameOrCallback({
+              success: false,
+              error: "Invalid data format",
+            });
+          }
+          return;
+        }
+
+        const room = gameRooms.get(roomCode);
+
+        if (!room) {
+          if (callback) callback({ success: false, error: "Room not found" });
+          return;
+        }
+
+        if (room.players.length >= 2) {
+          if (callback) callback({ success: false, error: "Room is full" });
+          return;
+        }
+
+        // Authenticate user if token provided
+        const user = await authenticateSocket(token);
+
+        room.players.push({
+          id: socket.id,
+          name: playerName,
+          symbol: "O",
+          userId: user ? user._id : null,
+        });
+        room.gameState.isActive = true;
+        room.roundCount = 1;
+
+        socket.join(roomCode);
+        console.log(
+          `${playerName} joined room: ${roomCode}${user ? ` (authenticated)` : ` (guest)`}`
+        );
+
+        // Create GameSession immediately for real-time standings
+        // This creates the database record as soon as 2 players join,
+        // allowing us to track statistics across multiple rounds
+        if (room.players.length === 2) {
+          try {
+            const gameSession = new GameSession({
+              player1Name: room.players[0].name,
+              player2Name: room.players[1].name,
+              player1Id: room.players[0].userId,
+              player2Id: room.players[1].userId,
+            });
+            const savedSession = await gameSession.save();
+            room.gameSessionId = savedSession._id;
+            console.log(
+              `GameSession created for room ${roomCode}: ${savedSession._id}`
+            );
+          } catch (error) {
+            console.error(
+              `Failed to create GameSession for room ${roomCode}:`,
+              error
+            );
+          }
+        }
+
+        let gameSessionData = null;
+        if (room.gameSessionId) {
+          try {
+            gameSessionData = await GameSession.findById(room.gameSessionId);
+          } catch (error) {
+            console.error(
+              `Failed to fetch GameSession ${room.gameSessionId}:`,
+              error
+            );
+          }
+        }
+
+        // Notify all players that game is ready to start
+        io.to(roomCode).emit("game_ready", {
+          players: room.players,
+          gameState: room.gameState,
+          gameSession: gameSessionData,
+        });
+
+        if (callback) callback({ success: true, roomCode, playerSymbol: "O" });
+      }
+    );
+  },
+
+  /**
+   * JOIN EXISTING ROOM - Player reconnects to room after page navigation
+   */
+  handleJoinExistingRoom: (io, socket) => {
+    socket.on("join_existing_room", async (data, callback) => {
+      const { roomCode, playerName, playerSymbol, token } = data;
+
+      // Authenticate user if token provided
+      const user = await authenticateSocket(token);
       const room = gameRooms.get(roomCode);
 
       if (!room) {
@@ -207,148 +402,41 @@ const socketHandlers = {
         return;
       }
 
-      if (room.players.length >= 2) {
-        callback({ success: false, error: "Room is full" });
+      // Check if player is rejoining existing session
+      const existingPlayer = room.players.find(
+        (p) => p.name === playerName && p.symbol === playerSymbol
+      );
+
+      if (existingPlayer) {
+        // Update socket ID and ensure userId is set
+        existingPlayer.id = socket.id;
+        existingPlayer.userId = user ? user._id : null;
+        socket.join(roomCode);
+
+        let gameSessionData = null;
+        if (room.gameSessionId) {
+          try {
+            gameSessionData = await GameSession.findById(room.gameSessionId);
+          } catch (error) {
+            console.error(
+              `Failed to fetch GameSession ${room.gameSessionId}:`,
+              error
+            );
+          }
+        }
+
+        socket.emit("game_ready", {
+          players: room.players,
+          gameState: room.gameState,
+          gameSession: gameSessionData,
+        });
+
+        callback({ success: true });
         return;
       }
 
-      room.players.push({ id: socket.id, name: playerName, symbol: "O" });
-      room.gameState.isActive = true;
-      room.roundCount = 1;
-
-      socket.join(roomCode);
-      console.log(`${playerName} joined room: ${roomCode}`);
-
-      // Create GameSession immediately for real-time standings
-      // This creates the database record as soon as 2 players join,
-      // allowing us to track statistics across multiple rounds
-      if (room.players.length === 2) {
-        try {
-          const gameSession = new GameSession({
-            player1Name: room.players[0].name,
-            player2Name: room.players[1].name,
-          });
-          const savedSession = await gameSession.save();
-          room.gameSessionId = savedSession._id;
-          console.log(
-            `GameSession created for room ${roomCode}: ${savedSession._id}`
-          );
-        } catch (error) {
-          console.error(
-            `Failed to create GameSession for room ${roomCode}:`,
-            error
-          );
-        }
-      }
-
-      let gameSessionData = null;
-      if (room.gameSessionId) {
-        try {
-          gameSessionData = await GameSession.findById(room.gameSessionId);
-        } catch (error) {
-          console.error(
-            `Failed to fetch GameSession ${room.gameSessionId}:`,
-            error
-          );
-        }
-      }
-
-      // Notify all players that game is ready to start
-      io.to(roomCode).emit("game_ready", {
-        players: room.players,
-        gameState: room.gameState,
-        gameSession: gameSessionData,
-      });
-
-      callback({ success: true, roomCode, playerSymbol: "O" });
+      callback({ success: false, error: "Player not found in room" });
     });
-  },
-
-  /**
-   * JOIN EXISTING ROOM - Player rejoins room (for page navigation/reconnection)
-   */
-  handleJoinExistingRoom: (io, socket) => {
-    socket.on(
-      "join_existing_room",
-      async (roomCode, playerName, playerSymbol, callback) => {
-        const room = gameRooms.get(roomCode);
-
-        if (!room) {
-          callback({ success: false, error: "Room not found" });
-          return;
-        }
-
-        // Check if player is rejoining existing session
-        const existingPlayer = room.players.find(
-          (p) => p.name === playerName && p.symbol === playerSymbol
-        );
-        if (existingPlayer) {
-          existingPlayer.id = socket.id;
-          socket.join(roomCode);
-
-          let gameSessionData = null;
-          if (room.gameSessionId) {
-            try {
-              gameSessionData = await GameSession.findById(room.gameSessionId);
-            } catch (error) {
-              console.error(
-                `Failed to fetch GameSession ${room.gameSessionId}:`,
-                error
-              );
-            }
-          }
-
-          socket.emit("game_ready", {
-            players: room.players,
-            gameState: room.gameState,
-            gameSession: gameSessionData,
-          });
-
-          callback({ success: true });
-          return;
-        }
-
-        // Join as new player if room has space
-        if (
-          room.players.length === 1 &&
-          !room.players.find((p) => p.symbol === playerSymbol)
-        ) {
-          room.players.push({
-            id: socket.id,
-            name: playerName,
-            symbol: playerSymbol,
-          });
-          room.gameState.isActive = true;
-          socket.join(roomCode);
-
-          console.log(`${playerName} joined existing room: ${roomCode}`);
-
-          let gameSessionData = null;
-          if (room.gameSessionId) {
-            try {
-              gameSessionData = await GameSession.findById(room.gameSessionId);
-            } catch (error) {
-              console.error(
-                `Failed to fetch GameSession ${room.gameSessionId}:`,
-                error
-              );
-            }
-          }
-
-          // Notify all players that game is ready
-          io.to(roomCode).emit("game_ready", {
-            players: room.players,
-            gameState: room.gameState,
-            gameSession: gameSessionData,
-          });
-
-          callback({ success: true });
-          return;
-        }
-
-        callback({ success: false, error: "Room is full or invalid" });
-      }
-    );
   },
 
   /**
@@ -391,7 +479,25 @@ const socketHandlers = {
 
         // Update database and send response with fresh standings
         if (room.gameSessionId) {
-          await updateGameSessionInDatabase(room, winner, isDraw);
+          // Create moves array from game state (simplified for now)
+          const moves = [];
+          room.gameState.board.forEach((cell, index) => {
+            if (cell) {
+              moves.push({
+                player: cell,
+                position: index,
+                timestamp: new Date(),
+              });
+            }
+          });
+
+          await updateGameSessionInDatabase(
+            room,
+            winner,
+            isDraw,
+            room.gameState.board,
+            moves
+          );
 
           try {
             const updatedGameSession = await GameSession.findById(

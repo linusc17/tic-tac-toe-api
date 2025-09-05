@@ -3,6 +3,7 @@ const BaseRoute = require("./_base.route");
 const GameSessionMapper = require("../mappers/game-session.mapper");
 const GameSessionValidator = require("../validations/game-session.validation");
 const gameController = require("../controllers/games");
+const { optionalAuth } = require("../middleware/auth");
 const {
   validateCreateGame,
   validateUpdateGame,
@@ -13,10 +14,16 @@ const {
 class Games extends BaseRoute {
   load() {
     this.app.get("/api/games", validateListGames, this.listGames.bind(this));
-    this.app.post("/api/games", validateCreateGame, this.createGame.bind(this));
+    this.app.post(
+      "/api/games",
+      optionalAuth,
+      validateCreateGame,
+      this.createGame.bind(this)
+    );
     this.app.get("/api/games/:id", validateGetGame, this.getGame.bind(this));
     this.app.put(
       "/api/games/:id",
+      optionalAuth,
       validateUpdateGame,
       this.updateGame.bind(this)
     );
@@ -33,7 +40,10 @@ class Games extends BaseRoute {
 
   async createGame(req, res, next) {
     try {
-      const gameSession = await gameController.CreateGame.execute(req.body);
+      const gameSession = await gameController.CreateGame.execute(
+        req.body,
+        req.user
+      );
       res.status(201).json(new GameSessionMapper(gameSession));
     } catch (error) {
       next(error);
@@ -53,7 +63,11 @@ class Games extends BaseRoute {
   async updateGame(req, res, next) {
     try {
       const { id } = req.params;
-      const gameSession = await gameController.UpdateGame.execute(id, req.body);
+      const gameSession = await gameController.UpdateGame.execute(
+        id,
+        req.body,
+        req.user
+      );
       res.json(new GameSessionMapper(gameSession));
     } catch (error) {
       next(error);
