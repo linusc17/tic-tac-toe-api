@@ -32,7 +32,10 @@ class Games extends BaseRoute {
   async listGames(req, res, next) {
     try {
       const result = await gameController.ListGames.execute(req.query);
-      res.json(new GameSessionMapper(result.sessions, result.sessions.length));
+      res.json({
+        data: new GameSessionMapper(result.sessions, result.sessions.length),
+        pagination: result.pagination,
+      });
     } catch (error) {
       next(error);
     }
