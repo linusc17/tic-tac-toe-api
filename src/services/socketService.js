@@ -620,6 +620,35 @@ const socketHandlers = {
   },
 
   /**
+   * SEND EMOJI REACTION - Player sends emoji reaction
+   */
+  handleSendEmojiReaction: (io, socket) => {
+    socket.on("send_emoji_reaction", (roomCode, reactionData) => {
+      const room = gameRooms.get(roomCode);
+
+      if (!room) {
+        return;
+      }
+
+      const player = room.players.find((p) => p.id === socket.id);
+      if (!player) {
+        return;
+      }
+
+      // Validate reaction data
+      if (!reactionData || !reactionData.emoji || !reactionData.id) {
+        return;
+      }
+
+      // Broadcast emoji reaction to all players in room
+      io.to(roomCode).emit("emoji_reaction", reactionData);
+      console.log(
+        `Emoji reaction in room ${roomCode}: ${player.name} sent ${reactionData.emoji}`
+      );
+    });
+  },
+
+  /**
    * DISCONNECT - Player disconnects from server
    */
   handleDisconnect: (io, socket) => {
@@ -767,6 +796,7 @@ const initializeSocketHandlers = (io) => {
     socketHandlers.handlePlayerReady(io, socket);
     socketHandlers.handleNewRound(io, socket);
     socketHandlers.handleSendMessage(io, socket);
+    socketHandlers.handleSendEmojiReaction(io, socket);
     socketHandlers.handleDisconnect(io, socket);
   });
 
