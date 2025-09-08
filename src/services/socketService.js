@@ -709,10 +709,15 @@ const socketHandlers = {
 /**
  * Clean up empty GameSession records from database
  * Run once on server start to clean existing empty records
+ * Only delete sessions older than 10 minutes to avoid deleting active AI games
  */
 const cleanupEmptyGameSessions = async () => {
   try {
-    const result = await GameSession.deleteMany({ totalRounds: 0 });
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const result = await GameSession.deleteMany({
+      totalRounds: 0,
+      createdAt: { $lt: tenMinutesAgo },
+    });
     if (result.deletedCount > 0) {
       console.log(
         `Cleaned up ${result.deletedCount} empty GameSession records on startup`
@@ -760,12 +765,17 @@ const startRoomCleanup = () => {
         }
       }
 
-      // Also clean up any empty GameSessions that might have been missed
+      // Also clean up any old empty GameSessions that might have been missed
+      // Only delete sessions that are more than 10 minutes old to avoid deleting active games
       try {
-        const result = await GameSession.deleteMany({ totalRounds: 0 });
+        const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+        const result = await GameSession.deleteMany({
+          totalRounds: 0,
+          createdAt: { $lt: tenMinutesAgo },
+        });
         if (result.deletedCount > 0) {
           console.log(
-            `Cleaned up ${result.deletedCount} empty GameSession records during periodic cleanup`
+            `Cleaned up ${result.deletedCount} old empty GameSession records during periodic cleanup`
           );
         }
       } catch (error) {
