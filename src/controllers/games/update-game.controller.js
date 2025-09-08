@@ -2,7 +2,7 @@ const GameSession = require("../../../models/GameSession");
 const GameStatsService = require("../../services/gameStatsService");
 
 class UpdateGameController {
-  static async execute(id, updates) {
+  static async execute(id, updates, user = null) {
     if (!id) {
       const error = new Error("Game session ID is required");
       error.statusCode = 400;
